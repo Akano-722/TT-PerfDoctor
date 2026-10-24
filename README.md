@@ -24,9 +24,11 @@ iOS 上没有控制台，凭感觉调优很容易调错方向。常见误判：
 
 ### 方式 A：Git 安装（iOS 推荐）
 
-1. 把本目录推到一个**匿名可访问的 HTTP(S) Git 仓库**。
-2. TauriTavern → 扩展 → 安装扩展，填仓库 URL。
-3. 重载页面。
+仓库：<https://github.com/Akano-722/TT-PerfDoctor>
+
+1. TauriTavern → 扩展 → 安装扩展，填 `https://github.com/Akano-722/TT-PerfDoctor`（带 `.git` 也可以）。
+2. 重载页面。
+3. 在扩展管理里确认已启用。
 
 > TT 只接受匿名 http(s) Git：不支持 SSH、URL 带账号密码、query/fragment、LFS、submodule、ZIP。
 
