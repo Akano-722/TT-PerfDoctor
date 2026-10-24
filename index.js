@@ -17,6 +17,10 @@ import {
     resetAttribution,
     createSampler,
     summarizeSamples,
+    measureFps,
+    measureIframeFps,
+    scanVisualSuspects,
+    readTtPerfSnapshot,
 } from './metrics.js';
 import { mountUI } from './ui.js';
 
@@ -36,27 +40,49 @@ const state = {
     diff: null,
     scan: null,
     attr: null,
+    probe: null,
+    visual: null,
+    ttPerf: null,
+    ttPerfAutoEnabled: false,
     perfCss: false,
     pendingReload: false,
     advice: '',
     experiments: {
         noAnim: false,
+        pauseAnimations: false,
+        effectsOff: false,
+        removeBg: false,
+        hideMedia: false,
         hideChatIframes: false,
         hideOtherIframes: false,
+        removeIframes: false,
     },
 };
 
 const EXPERIMENT_CLASSES = {
     noAnim: 'ttpd-no-anim',
+    pauseAnimations: 'ttpd-pause-anim',
+    effectsOff: 'ttpd-no-effects',
+    removeBg: 'ttpd-no-bg',
+    hideMedia: 'ttpd-hide-media',
     hideChatIframes: 'ttpd-hide-chat-iframes',
     hideOtherIframes: 'ttpd-hide-other-iframes',
 };
 
 const EXPERIMENT_LABELS = {
     noAnim: '禁用动画/过渡',
+    pauseAnimations: '暂停运行中的动画',
+    effectsOff: '关闭滤镜/模糊/阴影',
+    removeBg: '移除整页背景图',
+    hideMedia: '隐藏 canvas / video',
     hideChatIframes: '隐藏聊天内 iframe',
     hideOtherIframes: '隐藏聊天外 iframe',
+    removeIframes: '移除全部 iframe',
 };
+
+/** Animations paused by the A/B switch, so turning it off can resume them. */
+let pausedAnimations = new Set();
+let probeRunning = false;
 
 let settings = { perfCss: false };
 let sampler = null;
@@ -104,6 +130,10 @@ export async function activate() {
             onApplyDepth: applyJsrDepth,
             onDisableStreaming: disableStreaming,
             onToggleExperiment: setExperiment,
+            onProbeBlank: runBlankProbe,
+            onProbeIframe: runIframeProbe,
+            onScanVisual: runVisualScan,
+            onToggleTtPerf: toggleTtPerf,
             onCopy: copyReport,
             onClear: clearData,
         });
@@ -163,6 +193,9 @@ function paintState() {
         diff: state.diff,
         scan: state.scan,
         attr: state.attr,
+        probe: state.probe,
+        visual: state.visual,
+        ttPerf: state.ttPerf,
         experiments: state.experiments,
         perfCss: state.perfCss,
         pendingReload: state.pendingReload,
@@ -204,6 +237,7 @@ function onOpen() {
     refreshConfig();
     state.live = null;
     state.attr = getAttribution(6);
+    state.ttPerf = readTtPerfSnapshot();
     sampler?.start();
     clearInterval(countdownTimer);
     countdownTimer = setInterval(scheduleRender, 500);
@@ -236,6 +270,7 @@ function startRecording() {
     state.recordEndsAt = Date.now() + RECORD_SECONDS * 1000;
     resetAttribution();
     state.attr = getAttribution(6);
+    enableTtPerfForRecording();
     sampler?.start();
     clearTimeout(recordTimer);
     recordTimer = setTimeout(stopRecording, RECORD_SECONDS * 1000);
@@ -251,6 +286,7 @@ function stopRecording() {
     state.recording = false;
     state.recordEndsAt = 0;
     clearTimeout(recordTimer);
+    finishTtPerfRecording();
     state.summary = summarizeSamples(state.samples);
     if (!ui?.isOpen()) {
         sampler?.stop();
@@ -472,15 +508,169 @@ function disableStreaming() {
 }
 
 function setExperiment(name, enabled) {
-    const className = EXPERIMENT_CLASSES[name];
-    if (!className) {
+    const on = Boolean(enabled);
+    if (!(name in state.experiments)) {
         return;
     }
-    const on = Boolean(enabled);
     state.experiments[name] = on;
-    document.body.classList.toggle(className, on);
-    ui?.toast(`${on ? '已开启' : '已关闭'}：${EXPERIMENT_LABELS[name]}（刷新即恢复）`);
+
+    const className = EXPERIMENT_CLASSES[name];
+    if (className) {
+        document.body.classList.toggle(className, on);
+    }
+
+    if (name === 'pauseAnimations') {
+        setWebAnimationsPaused(on);
+    } else if (name === 'removeIframes' && on) {
+        const frames = document.querySelectorAll('iframe');
+        const count = frames.length;
+        frames.forEach(frame => frame.remove());
+        ui?.toast(`已移除 ${count} 个 iframe（刷新页面恢复）`);
+    }
+
+    if (name !== 'removeIframes') {
+        ui?.toast(`${on ? '已开启' : '已关闭'}：${EXPERIMENT_LABELS[name]}（刷新即恢复）`);
+    }
     scheduleRender();
+}
+
+function setWebAnimationsPaused(paused) {
+    if (!paused) {
+        for (const animation of pausedAnimations) {
+            try {
+                animation.play();
+            } catch {
+                // Animation may have been cancelled.
+            }
+        }
+        pausedAnimations = new Set();
+        return;
+    }
+    try {
+        for (const animation of document.getAnimations?.() ?? []) {
+            if (animation.playState !== 'running') {
+                continue;
+            }
+            try {
+                animation.pause();
+                pausedAnimations.add(animation);
+            } catch {
+                // Ignore individual failures.
+            }
+        }
+    } catch {
+        // Optional API.
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Isolation probes                                                    */
+/* ------------------------------------------------------------------ */
+
+async function runBlankProbe() {
+    if (probeRunning) {
+        return;
+    }
+    probeRunning = true;
+    const wasOpen = ui?.isOpen();
+    ui?.close();
+    document.body.classList.add('ttpd-blank');
+    ui?.toast('空白遮罩测量中（2.5 秒）…');
+
+    try {
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const result = await measureFps(2500);
+        state.probe = { ...(state.probe ?? {}), blank: result, blankAt: Date.now() };
+        ui?.toast(result.aborted
+            ? '测量被中断（页面切到后台？）'
+            : `空白遮罩：${result.fps} fps`);
+    } finally {
+        document.body.classList.remove('ttpd-blank');
+        if (wasOpen) {
+            ui?.open();
+        }
+        probeRunning = false;
+        scheduleRender();
+    }
+}
+
+async function runIframeProbe() {
+    if (probeRunning) {
+        return;
+    }
+    probeRunning = true;
+    ui?.toast('iframe 内测量中（2 秒）…');
+    try {
+        const result = await measureIframeFps(2000);
+        state.probe = { ...(state.probe ?? {}), iframe: result, iframeAt: Date.now() };
+        ui?.toast(result.error ? `iframe 探针不可用：${result.error}` : `iframe 内：${result.fps} fps`);
+    } finally {
+        probeRunning = false;
+        scheduleRender();
+    }
+}
+
+function captureVisual() {
+    try {
+        return scanVisualSuspects();
+    } catch (error) {
+        return { error: String(error?.message ?? error) };
+    }
+}
+
+function runVisualScan() {
+    ui?.toast('扫描视觉嫌疑元素…');
+    state.visual = captureVisual();
+    scheduleRender();
+}
+
+function toggleTtPerf() {
+    const controller = globalThis.__TAURITAVERN_PERF__;
+    if (!controller || typeof controller.toggle !== 'function') {
+        ui?.toast('当前 TT 版本没有内置 Perf HUD');
+        return;
+    }
+    try {
+        controller.toggle();
+        state.ttPerf = readTtPerfSnapshot();
+        ui?.toast(`TT HUD ${state.ttPerf.enabled ? '已开启（左上角）' : '已关闭'}`);
+    } catch (error) {
+        ui?.toast(`TT HUD 操作失败：${error?.message ?? error}`);
+    }
+    scheduleRender();
+}
+
+function enableTtPerfForRecording() {
+    state.ttPerfAutoEnabled = false;
+    const controller = globalThis.__TAURITAVERN_PERF__;
+    if (!controller || typeof controller.enable !== 'function') {
+        return;
+    }
+    try {
+        if (!controller.enabled) {
+            controller.enable();
+            state.ttPerfAutoEnabled = true;
+        }
+    } catch {
+        // Never block recording on the host HUD.
+    }
+}
+
+function finishTtPerfRecording() {
+    // Snapshot while it is still enabled, then restore the previous state.
+    const snapshot = readTtPerfSnapshot();
+    const controller = globalThis.__TAURITAVERN_PERF__;
+    if (state.ttPerfAutoEnabled && controller && typeof controller.disable === 'function') {
+        try {
+            controller.disable();
+        } catch {
+            // Ignore.
+        }
+        state.ttPerf = snapshot.available ? { ...snapshot, enabled: false } : snapshot;
+    } else {
+        state.ttPerf = snapshot;
+    }
+    state.ttPerfAutoEnabled = false;
 }
 
 /* ------------------------------------------------------------------ */
@@ -523,6 +713,15 @@ function buildAdvice() {
         lines.push('④ 虚拟化已托管时通常不需要 CSS 性能模式；若滚动位置跳动，请关掉。');
     }
 
+    const blank = state.probe?.blank;
+    if (blank && Number.isFinite(blank.fps)) {
+        if (blank.fps < 30) {
+            lines.push(`◆ 空白遮罩（页面几乎全隐藏）仍只有 ${blank.fps} fps：瓶颈不在聊天内容或主题，先看 TT HUD 的长任务 / invoke 与设备发热。`);
+        } else {
+            lines.push(`◆ 空白遮罩恢复到 ${blank.fps} fps：瓶颈在页面绘制/合成，优先试「关闭滤镜/模糊」和「移除整页背景图」。`);
+        }
+    }
+
     if (!lines.length) {
         lines.push('设置看起来已经比较克制。若仍然卡，先录制 30 秒并导出报告。');
     }
@@ -535,12 +734,15 @@ function buildAdvice() {
 
 function buildReport() {
     return {
-        tool: { name: 'TT-PerfDoctor', version: '0.2.0' },
+        tool: { name: 'TT-PerfDoctor', version: '0.3.0' },
         generatedAt: new Date().toISOString(),
         config: state.config ?? getHostConfig(),
         dom: getDomSnapshot(),
         listeners: getListenerCounters(),
         attribution: getAttribution(15),
+        probe: state.probe,
+        visual: state.visual ?? captureVisual(),
+        ttPerf: state.ttPerf ?? readTtPerfSnapshot(),
         experiments: { ...state.experiments },
         live: state.live,
         recording: summarizeSamples(state.samples),
@@ -577,6 +779,9 @@ function clearData() {
     state.diff = null;
     state.scan = null;
     state.attr = null;
+    state.probe = null;
+    state.visual = null;
+    state.ttPerf = null;
     state.pendingReload = false;
     resetAttribution();
     sampler?.clearHistory();

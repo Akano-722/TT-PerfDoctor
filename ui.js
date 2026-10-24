@@ -52,6 +52,19 @@ const TEMPLATE = `
         </section>
 
         <section class="ttpd-section">
+            <h3>定位探针</h3>
+            <p class="ttpd-hint">先测「空白遮罩」：整个页面隐藏后仍然低帧率，说明不是聊天/主题内容；恢复到高帧率，则是页面绘制或合成的问题。</p>
+            <div class="ttpd-row ttpd-wrap">
+                <button id="ttpd-probe-blank" class="ttpd-btn" type="button">空白遮罩 2.5s</button>
+                <button id="ttpd-probe-iframe" class="ttpd-btn" type="button">iframe 内 2s</button>
+                <button id="ttpd-scan-visual" class="ttpd-btn" type="button">扫描视觉嫌疑</button>
+                <button id="ttpd-tthud" class="ttpd-btn" type="button">TT HUD 开关</button>
+            </div>
+            <div id="ttpd-probe-out" class="ttpd-lines"></div>
+            <div id="ttpd-visual-out" class="ttpd-lines"></div>
+        </section>
+
+        <section class="ttpd-section">
             <h3>泄漏对比</h3>
             <p class="ttpd-hint">记录基线 → 去滚动 / 发消息 / 切换聊天 → 对比。iframe、监听器只增不减就是泄漏信号。</p>
             <div class="ttpd-row">
@@ -93,10 +106,26 @@ const TEMPLATE = `
 
         <section class="ttpd-section">
             <h3>实验 A/B</h3>
-            <p class="ttpd-hint">用来定位卡顿来源：开关时盯着上方「帧率」。取消勾选或刷新页面即恢复，不留设置。</p>
+            <p class="ttpd-hint">开关后等 2–3 秒再看上方「帧率」。除「移除 iframe」外，取消勾选或刷新页面即恢复，不留设置。</p>
             <label class="ttpd-check">
                 <input type="checkbox" data-exp="noAnim">
-                <span>禁用动画 / 过渡（主题动效、渐变）</span>
+                <span>禁用动画 / 过渡（CSS 主题动效）</span>
+            </label>
+            <label class="ttpd-check">
+                <input type="checkbox" data-exp="pauseAnimations">
+                <span>暂停运行中的动画（Web Animations，含 JS 创建的）</span>
+            </label>
+            <label class="ttpd-check">
+                <input type="checkbox" data-exp="effectsOff">
+                <span>关闭滤镜 / 模糊 / 阴影（backdrop-filter 通常是发热大头）</span>
+            </label>
+            <label class="ttpd-check">
+                <input type="checkbox" data-exp="removeBg">
+                <span>移除整页背景图（含头像等所有背景图）</span>
+            </label>
+            <label class="ttpd-check">
+                <input type="checkbox" data-exp="hideMedia">
+                <span>隐藏 canvas / video</span>
             </label>
             <label class="ttpd-check">
                 <input type="checkbox" data-exp="hideChatIframes">
@@ -106,6 +135,11 @@ const TEMPLATE = `
                 <input type="checkbox" data-exp="hideOtherIframes">
                 <span>隐藏聊天外 iframe（常驻组件 / 主题）</span>
             </label>
+            <label class="ttpd-check">
+                <input type="checkbox" data-exp="removeIframes">
+                <span>彻底移除全部 iframe（停掉其脚本；刷新才能恢复）</span>
+            </label>
+            <p class="ttpd-hint">「隐藏」只是不绘制，iframe 里的 JS 仍在跑；只有「彻底移除」能停掉它们的 CPU 占用。</p>
         </section>
 
         <section class="ttpd-section">
@@ -195,6 +229,10 @@ export function mountUI(handlers) {
     $('#ttpd-copy').addEventListener('click', () => handlers.onCopy?.());
     $('#ttpd-clear').addEventListener('click', () => handlers.onClear?.());
     $('#ttpd-nostream').addEventListener('click', () => handlers.onDisableStreaming?.());
+    $('#ttpd-probe-blank').addEventListener('click', () => handlers.onProbeBlank?.());
+    $('#ttpd-probe-iframe').addEventListener('click', () => handlers.onProbeIframe?.());
+    $('#ttpd-scan-visual').addEventListener('click', () => handlers.onScanVisual?.());
+    $('#ttpd-tthud').addEventListener('click', () => handlers.onToggleTtPerf?.());
     $('#ttpd-reload').addEventListener('click', () => location.reload());
     $('#ttpd-perfcss').addEventListener('change', event => {
         handlers.onTogglePerfCss?.(Boolean(event.target.checked));
@@ -322,6 +360,20 @@ export function mountUI(handlers) {
             attrEl.textContent = attrText;
         }
 
+        const probeEl = $('#ttpd-probe-out');
+        const probeText = buildProbeText(state.probe, state.ttPerf);
+        if (probeEl.textContent !== probeText) {
+            probeEl.textContent = probeText;
+        }
+
+        const visualEl = $('#ttpd-visual-out');
+        const visualText = buildVisualText(state.visual);
+        if (visualEl.textContent !== visualText) {
+            visualEl.textContent = visualText;
+        }
+
+        setText(host, 'ttpd-tthud', state.ttPerf?.enabled ? '关闭 TT HUD' : '开启 TT HUD');
+
         for (const input of host.querySelectorAll('[data-exp]')) {
             const on = Boolean(state.experiments?.[input.dataset.exp]);
             if (input.checked !== on) {
@@ -353,6 +405,60 @@ export function mountUI(handlers) {
             lines.push('⚠️ 疑似泄漏：资源增长与操作量不成比例。');
         } else {
             lines.push('未发现明显泄漏。');
+        }
+        return lines.join('\n');
+    }
+
+    function buildProbeText(probe, ttPerf) {
+        const lines = [];
+        const data = probe ?? {};
+        if (data.blank) {
+            lines.push(`空白遮罩：${data.blank.fps} fps（${data.blank.frames} 帧 / ${data.blank.durationMs} ms${data.blank.aborted ? ' · 中断' : ''}）`);
+        }
+        if (data.iframe) {
+            lines.push(data.iframe.error
+                ? `iframe 内：${data.iframe.error}`
+                : `iframe 内：${data.iframe.fps} fps（${data.iframe.frames} 帧）`);
+        }
+        if (ttPerf) {
+            if (!ttPerf.available) {
+                lines.push('TT HUD：当前版本未安装');
+            } else if (ttPerf.error) {
+                lines.push(`TT HUD：读取失败 ${ttPerf.error}`);
+            } else {
+                const snap = ttPerf.snapshot ?? {};
+                const fps = Number(snap.fps);
+                const lag = snap.eventLoopLag?.p95Ms;
+                const invokes = snap.invokes?.count10s;
+                lines.push(`TT HUD：${ttPerf.enabled ? '开启中' : '已关闭'}`
+                    + `${Number.isFinite(fps) ? ` · FPS ${fps.toFixed(1)}` : ''}`
+                    + `${lag != null ? ` · 事件循环 p95 ${Math.round(lag)} ms` : ''}`
+                    + `${invokes != null ? ` · invoke ${invokes}/10s` : ''}`);
+            }
+        }
+        return lines.length
+            ? lines.join('\n')
+            : '点上方按钮开始定位；「空白遮罩」最能一锤定音。';
+    }
+
+    function buildVisualText(visual) {
+        if (!visual) {
+            return '';
+        }
+        if (visual.error) {
+            return `扫描失败：${visual.error}`;
+        }
+        const lines = [
+            `canvas ${visual.canvas} · video ${visual.video}（播放 ${visual.playingVideo}） · iframe ${visual.iframes}`,
+            `Web 动画 ${visual.webAnimations}（运行 ${visual.runningAnimations}）`,
+        ];
+        if (visual.suspects?.length) {
+            lines.push('面积最大的嫌疑：');
+            for (const item of visual.suspects.slice(0, 6)) {
+                lines.push(`  ${item.viewportPct}% 屏 · ${item.selector} · ${item.reasons.join('/')}`);
+            }
+        } else {
+            lines.push('没有发现滤镜 / 背景图 / 动画 / canvas 类嫌疑。');
         }
         return lines.join('\n');
     }

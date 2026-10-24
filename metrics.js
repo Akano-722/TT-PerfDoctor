@@ -36,6 +36,8 @@ const attribution = {
 let budgetWindowAt = 0;
 let budgetUsed = 0;
 const sourceCache = new WeakMap();
+const debugStacks = [];
+const MAX_DEBUG_STACKS = 3;
 
 /** Own extension files, so stack frames from our wrappers are skipped. */
 const SELF_FILES = (() => {
@@ -57,14 +59,18 @@ function normalizeSource(url) {
     } catch {
         return null;
     }
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:' && parsed.protocol !== 'file:') {
+    if (parsed.protocol === 'data:' || parsed.protocol === 'about:' || parsed.protocol === 'javascript:') {
         return null;
     }
     if (parsed.pathname.includes('TT-PerfDoctor') || (SELF_FILES && SELF_FILES.has(parsed.pathname))) {
         return null;
     }
+    if (parsed.protocol === 'blob:') {
+        const id = parsed.pathname.split('/').filter(Boolean).pop() ?? 'unknown';
+        return `blob/${id.slice(0, 8)}`;
+    }
     const parts = parsed.pathname.split('/').filter(Boolean);
-    return parts.slice(-2).join('/') || parsed.hostname;
+    return parts.slice(-2).join('/') || parsed.hostname || parsed.protocol;
 }
 
 function captureSource() {
@@ -90,7 +96,8 @@ function captureSource() {
     }
 
     for (const line of stack.split('\n')) {
-        const match = line.match(/((?:https?|file):\/\/[^\s)]+?):(\d+):(\d+)/);
+        // Any scheme with an authority (http, https, file, blob, tauri, ...).
+        const match = line.match(/([a-z][a-z0-9+.-]*:\/\/[^\s)]+?):(\d+):(\d+)/i);
         if (!match) {
             continue;
         }
@@ -98,6 +105,11 @@ function captureSource() {
         if (source) {
             return `${source}:${match[2]}`;
         }
+    }
+
+    // Keep a few raw stacks so the report can explain why attribution failed.
+    if (debugStacks.length < MAX_DEBUG_STACKS) {
+        debugStacks.push(stack.slice(0, 1200));
     }
     return null;
 }
@@ -189,6 +201,7 @@ export function getAttribution(limit = 6) {
             .slice(0, limit)
             .map(([source, meta]) => ({ source, count: meta.count, oldestMs: meta.oldestMs })),
         stackSamplesDropped: attribution.stackDropped,
+        debugStacks: debugStacks.slice(),
     };
 }
 
@@ -197,6 +210,7 @@ export function resetAttribution() {
     attribution.timeouts.clear();
     attribution.intervalSchedules.clear();
     attribution.stackDropped = 0;
+    debugStacks.length = 0;
     budgetWindowAt = performance.now();
     budgetUsed = 0;
 }
@@ -434,6 +448,295 @@ export function summarizeSamples(samples) {
         scrollEvents: samples.reduce((sum, sample) => sum + (sample.scrollEvents || 0), 0),
         scrollJank: samples.reduce((sum, sample) => sum + (sample.scrollJank || 0), 0),
     };
+}
+
+/* ------------------------------------------------------------------ */
+/* Isolation probes                                                    */
+/*                                                                     */
+/* These answer "is the frame rate capped by the page at all?" rather  */
+/* than describing the page. Safe one-shot helpers; no callbacks kept. */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Measure requestAnimationFrame rate for a fixed window.
+ * Resolves even when the document is hidden (rAF stops in that case).
+ * @param {number} durationMs
+ */
+export function measureFps(durationMs = 2000) {
+    return new Promise(resolve => {
+        const startedAt = performance.now();
+        let frames = 0;
+        let firstAt = 0;
+        let lastAt = 0;
+        let rafId = 0;
+        let failsafe = 0;
+        let finished = false;
+
+        const finish = aborted => {
+            if (finished) {
+                return;
+            }
+            finished = true;
+            if (rafId) {
+                cancelAnimationFrame(rafId);
+            }
+            if (failsafe) {
+                withInternal(() => clearTimeout(failsafe));
+            }
+            const elapsed = lastAt - firstAt;
+            resolve({
+                durationMs: Math.round(elapsed),
+                frames,
+                fps: elapsed > 0 ? Math.round(((frames - 1) / elapsed) * 1000 * 10) / 10 : 0,
+                aborted,
+            });
+        };
+
+        const step = stamp => {
+            if (!firstAt) {
+                firstAt = stamp;
+            }
+            lastAt = stamp;
+            frames += 1;
+            if (performance.now() - startedAt < durationMs) {
+                rafId = requestAnimationFrame(step);
+            } else {
+                finish(false);
+            }
+        };
+
+        failsafe = withInternal(() => setTimeout(() => finish(true), durationMs + 1500));
+        rafId = requestAnimationFrame(step);
+    });
+}
+
+/**
+ * Measure rAF inside a fresh same-origin iframe. A frame rate that stays
+ * low here too points at the host/compositor rather than the current page.
+ */
+export function measureIframeFps(durationMs = 2000) {
+    const frame = document.createElement('iframe');
+    frame.setAttribute('aria-hidden', 'true');
+    frame.style.cssText = 'position:fixed;left:0;top:0;width:2px;height:2px;border:0;'
+        + 'opacity:0.01;pointer-events:none;z-index:0;';
+    document.body.appendChild(frame);
+
+    const win = frame.contentWindow;
+    if (!win || typeof win.requestAnimationFrame !== 'function') {
+        frame.remove();
+        return Promise.resolve({ error: 'iframe-raf-unavailable' });
+    }
+
+    const raf = win.requestAnimationFrame.bind(win);
+    const caf = win.cancelAnimationFrame.bind(win);
+
+    return new Promise(resolve => {
+        const startedAt = performance.now();
+        let frames = 0;
+        let firstAt = 0;
+        let lastAt = 0;
+        let rafId = 0;
+        let failsafe = 0;
+        let finished = false;
+
+        const finish = aborted => {
+            if (finished) {
+                return;
+            }
+            finished = true;
+            if (rafId) {
+                caf(rafId);
+            }
+            if (failsafe) {
+                withInternal(() => clearTimeout(failsafe));
+            }
+            const elapsed = lastAt - firstAt;
+            resolve({
+                durationMs: Math.round(elapsed),
+                frames,
+                fps: elapsed > 0 ? Math.round(((frames - 1) / elapsed) * 1000 * 10) / 10 : 0,
+                aborted,
+            });
+        };
+
+        const step = stamp => {
+            if (!firstAt) {
+                firstAt = stamp;
+            }
+            lastAt = stamp;
+            frames += 1;
+            if (performance.now() - startedAt < durationMs) {
+                rafId = raf(step);
+            } else {
+                finish(false);
+            }
+        };
+
+        failsafe = withInternal(() => setTimeout(() => finish(true), durationMs + 1500));
+        rafId = raf(step);
+    }).finally(() => {
+        try {
+            frame.remove();
+        } catch {
+            // Ignore.
+        }
+    });
+}
+
+const VISUAL_HINT_SELECTOR = [
+    'canvas',
+    'video',
+    'iframe',
+    '[style*="filter"]',
+    '[style*="backdrop"]',
+    '[style*="animation"]',
+    '[style*="background-image"]',
+    '[class*="bg" i]',
+    '[id*="bg" i]',
+    '[class*="background" i]',
+    '[id*="background" i]',
+    '[class*="effect" i]',
+    '[class*="particle" i]',
+    '[class*="blur" i]',
+    '[class*="glow" i]',
+    '[class*="live2d" i]',
+    '[class*="wallpaper" i]',
+].join(',');
+
+function describeElement(element) {
+    const tag = element.tagName.toLowerCase();
+    const id = element.id ? `#${element.id}` : '';
+    const className = typeof element.className === 'string' ? element.className.trim() : '';
+    const cls = className ? `.${className.split(/\s+/).slice(0, 3).join('.')}` : '';
+    return `${tag}${id}${cls}`.slice(0, 90);
+}
+
+/**
+ * Find painted elements that are plausible GPU/CPU sinks: fullscreen fixed
+ * layers, filters, backdrop filters, background images, animated nodes,
+ * canvases, videos and iframes. On-demand only; it walks computed styles.
+ */
+export function scanVisualSuspects() {
+    const viewport = Math.max(1, (globalThis.innerWidth ?? 1) * (globalThis.innerHeight ?? 1));
+    const suspects = [];
+
+    const canvas = document.querySelectorAll('canvas').length;
+    const iframes = document.querySelectorAll('iframe').length;
+    let video = 0;
+    let playingVideo = 0;
+    for (const element of document.querySelectorAll('video')) {
+        video += 1;
+        if (!element.paused) {
+            playingVideo += 1;
+        }
+    }
+
+    let webAnimations = 0;
+    let runningAnimations = 0;
+    try {
+        const animations = document.getAnimations?.() ?? [];
+        webAnimations = animations.length;
+        runningAnimations = animations.filter(animation => animation.playState === 'running').length;
+    } catch {
+        // Optional API.
+    }
+
+    const candidates = new Set();
+    try {
+        for (const element of document.querySelectorAll(VISUAL_HINT_SELECTOR)) {
+            candidates.add(element);
+        }
+    } catch {
+        // Ignore selector support issues.
+    }
+    const addChildren = root => {
+        for (const element of root?.children ?? []) {
+            candidates.add(element);
+        }
+    };
+    addChildren(document.body);
+    addChildren(document.documentElement);
+    addChildren(document.querySelector('#sheld'));
+    if (document.body) {
+        candidates.add(document.body);
+    }
+
+    for (const element of candidates) {
+        if (!element || element.nodeType !== 1 || element.closest('#ttpd-root')) {
+            continue;
+        }
+        let style;
+        try {
+            style = getComputedStyle(element);
+        } catch {
+            continue;
+        }
+        const rect = element.getBoundingClientRect();
+        const area = Math.max(0, rect.width * rect.height);
+        const reasons = [];
+        if (style.filter && style.filter !== 'none') {
+            reasons.push('filter');
+        }
+        if (style.backdropFilter && style.backdropFilter !== 'none') {
+            reasons.push('backdrop');
+        }
+        if (style.backgroundImage && style.backgroundImage !== 'none') {
+            reasons.push('bg-image');
+        }
+        if (style.animationName && style.animationName !== 'none') {
+            reasons.push('css-anim');
+        }
+        if (style.position === 'fixed' && area >= viewport * 0.5) {
+            reasons.push('fullscreen-fixed');
+        }
+        if (element.tagName === 'CANVAS') {
+            reasons.push('canvas');
+        }
+        if (element.tagName === 'VIDEO') {
+            reasons.push(element.paused ? 'video' : 'video-playing');
+        }
+        if (element.tagName === 'IFRAME') {
+            reasons.push('iframe');
+        }
+        if (!reasons.length) {
+            continue;
+        }
+        suspects.push({
+            selector: describeElement(element),
+            area: Math.round(area),
+            viewportPct: Math.round((area / viewport) * 100),
+            reasons,
+        });
+    }
+
+    suspects.sort((left, right) => right.area - left.area);
+
+    return {
+        canvas,
+        video,
+        playingVideo,
+        iframes,
+        webAnimations,
+        runningAnimations,
+        suspects: suspects.slice(0, 10),
+    };
+}
+
+/** Read TT's built-in perf controller snapshot, if it is installed. */
+export function readTtPerfSnapshot() {
+    const controller = globalThis.__TAURITAVERN_PERF__;
+    if (!controller || typeof controller.snapshot !== 'function') {
+        return { available: false };
+    }
+    try {
+        return {
+            available: true,
+            enabled: Boolean(controller.enabled),
+            snapshot: controller.snapshot(),
+        };
+    } catch (error) {
+        return { available: true, error: String(error?.message ?? error) };
+    }
 }
 
 /**

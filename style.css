@@ -314,12 +314,48 @@ body.ttpd-no-anim *::after {
     transition: none !important;
 }
 
+body.ttpd-pause-anim *,
+body.ttpd-pause-anim *::before,
+body.ttpd-pause-anim *::after {
+    animation-play-state: paused !important;
+}
+
+body.ttpd-no-effects *,
+body.ttpd-no-effects *::before,
+body.ttpd-no-effects *::after {
+    filter: none !important;
+    -webkit-filter: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    box-shadow: none !important;
+    text-shadow: none !important;
+    mix-blend-mode: normal !important;
+    will-change: auto !important;
+}
+
+body.ttpd-no-bg,
+body.ttpd-no-bg *,
+body.ttpd-no-bg *::before,
+body.ttpd-no-bg *::after {
+    background-image: none !important;
+}
+
+body.ttpd-hide-media canvas,
+body.ttpd-hide-media video {
+    display: none !important;
+}
+
 body.ttpd-hide-chat-iframes #chat iframe {
     display: none !important;
 }
 
 body.ttpd-hide-other-iframes iframe:not(#chat iframe) {
     display: none !important;
+}
+
+/* One-shot blank probe: hide every app layer while the panel measures rAF. */
+body.ttpd-blank > *:not(#ttpd-root) {
+    visibility: hidden !important;
 }
 
 @media (prefers-reduced-motion: reduce) {
