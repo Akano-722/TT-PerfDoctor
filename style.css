@@ -1,0 +1,311 @@
+/* TT-PerfDoctor — iOS-first, solid colors only (no backdrop-filter). */
+
+.ttpd-hidden {
+    display: none !important;
+}
+
+#ttpd-fab {
+    position: fixed;
+    left: 8px;
+    bottom: calc(96px + env(safe-area-inset-bottom, 0px));
+    z-index: 2147483000;
+    width: 46px;
+    height: 46px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    color: #e8f1ff;
+    background: rgba(32, 40, 56, 0.72);
+    border: 1px solid rgba(140, 180, 255, 0.35);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+    opacity: 0.72;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+}
+
+#ttpd-fab.is-recording {
+    color: #fff;
+    background: rgba(160, 32, 48, 0.85);
+    opacity: 1;
+}
+
+#ttpd-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 2147483001;
+    background: rgba(0, 0, 0, 0.55);
+}
+
+#ttpd-panel {
+    position: fixed;
+    inset: 0;
+    z-index: 2147483002;
+    display: flex;
+    flex-direction: column;
+    background: #14171d;
+    color: #e6e8ec;
+    font-size: 14px;
+    line-height: 1.45;
+}
+
+.ttpd-head {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 10px;
+    background: #1b1f27;
+    border-bottom: 1px solid #2a3140;
+}
+
+.ttpd-title {
+    font-weight: 600;
+    font-size: 16px;
+}
+
+.ttpd-sub {
+    margin-left: 6px;
+    font-size: 11px;
+    font-weight: 400;
+    color: #8f9aab;
+}
+
+.ttpd-head-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.ttpd-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 12px;
+    padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+    overscroll-behavior: contain;
+}
+
+.ttpd-section {
+    margin-bottom: 18px;
+    padding: 12px;
+    border: 1px solid #262d3a;
+    border-radius: 10px;
+    background: #181c24;
+}
+
+.ttpd-section h3 {
+    margin: 0 0 10px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #9fb3d1;
+    letter-spacing: 0.4px;
+}
+
+.ttpd-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.ttpd-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: #11141a;
+    border: 1px solid #232a36;
+}
+
+.ttpd-cell span {
+    font-size: 11px;
+    color: #8a94a6;
+}
+
+.ttpd-cell b {
+    font-size: 16px;
+    font-variant-numeric: tabular-nums;
+}
+
+.ttpd-cell b.is-bad {
+    color: #ff8a8a;
+}
+
+.ttpd-note {
+    margin-top: 10px;
+    font-size: 12px;
+    color: #9aa6b8;
+}
+
+.ttpd-lines {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    font-size: 12.5px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: #c3ccda;
+}
+
+.ttpd-lines.is-warn {
+    color: #ffb3b3;
+}
+
+.ttpd-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 8px 0;
+    flex-wrap: nowrap;
+}
+
+.ttpd-row.ttpd-wrap {
+    flex-wrap: wrap;
+}
+
+.ttpd-muted {
+    font-size: 12px;
+    color: #8a94a6;
+}
+
+.ttpd-hint {
+    margin: 0 0 8px;
+    font-size: 12px;
+    color: #8a94a6;
+}
+
+.ttpd-btn {
+    min-height: 40px;
+    padding: 0 14px;
+    border-radius: 9px;
+    border: 1px solid #33405a;
+    background: #222a38;
+    color: #dfe7f3;
+    font-size: 13px;
+    font-weight: 500;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+}
+
+.ttpd-btn:active {
+    background: #2c3648;
+}
+
+.ttpd-btn-primary {
+    background: #2c5aa0;
+    border-color: #3a74c9;
+    color: #fff;
+}
+
+.ttpd-btn-rec {
+    background: #7a2230;
+    border-color: #a43246;
+    color: #fff;
+}
+
+.ttpd-check {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 0;
+    font-size: 13px;
+}
+
+.ttpd-check input {
+    width: 20px;
+    height: 20px;
+    margin: 0;
+    flex: 0 0 auto;
+}
+
+.ttpd-advice {
+    margin-top: 10px;
+    padding: 10px;
+    border-radius: 8px;
+    background: #11141a;
+    border: 1px solid #232a36;
+    font-size: 12.5px;
+    white-space: pre-wrap;
+    color: #c3ccda;
+}
+
+#ttpd-report {
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 160px;
+    margin-top: 8px;
+    padding: 10px;
+    border-radius: 8px;
+    border: 1px solid #2a3140;
+    background: #0e1116;
+    color: #b9c6d8;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    line-height: 1.4;
+    resize: vertical;
+}
+
+.ttpd-foot {
+    margin-top: 4px;
+    font-size: 11px;
+    color: #6f7a8c;
+    text-align: center;
+}
+
+.ttpd-toast {
+    position: fixed;
+    left: 50%;
+    bottom: calc(28px + env(safe-area-inset-bottom, 0px));
+    z-index: 2147483003;
+    transform: translateX(-50%);
+    max-width: 86vw;
+    padding: 10px 14px;
+    border-radius: 10px;
+    background: #0b0d11;
+    border: 1px solid #3a4456;
+    color: #eef2f8;
+    font-size: 13px;
+    text-align: center;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+
+#ttpd-fatal {
+    position: fixed;
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
+    z-index: 2147483004;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: #3a1218;
+    border: 1px solid #8a2a3a;
+    color: #ffd7dd;
+    font-size: 12px;
+    white-space: pre-wrap;
+}
+
+/*
+ * CSS performance mode (opt-in).
+ * Only content-visibility: no `contain: paint`, which would clip overflow.
+ * The last message is excluded so streaming output is never skipped.
+ */
+@supports (content-visibility: auto) {
+    body.ttpd-perf #chat > .mes:not(.last_mes) {
+        content-visibility: auto;
+        contain-intrinsic-size: 220px;
+        contain-intrinsic-size: auto 220px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #ttpd-fab,
+    .ttpd-btn {
+        transition: none;
+    }
+}
