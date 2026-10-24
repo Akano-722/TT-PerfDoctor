@@ -46,6 +46,12 @@ const TEMPLATE = `
         </section>
 
         <section class="ttpd-section">
+            <h3>归因</h3>
+            <p class="ttpd-hint">录制时统计：谁在加监听、谁在定时。来源取调用栈里的脚本文件，录制结束保留结果。</p>
+            <div id="ttpd-attr" class="ttpd-lines"></div>
+        </section>
+
+        <section class="ttpd-section">
             <h3>泄漏对比</h3>
             <p class="ttpd-hint">记录基线 → 去滚动 / 发消息 / 切换聊天 → 对比。iframe、监听器只增不减就是泄漏信号。</p>
             <div class="ttpd-row">
@@ -72,6 +78,8 @@ const TEMPLATE = `
             </label>
             <div class="ttpd-row ttpd-wrap">
                 <span class="ttpd-muted">JSR 渲染深度</span>
+                <button class="ttpd-btn" type="button" data-depth="1">1</button>
+                <button class="ttpd-btn" type="button" data-depth="3">3</button>
                 <button class="ttpd-btn" type="button" data-depth="5">5</button>
                 <button class="ttpd-btn" type="button" data-depth="10">10</button>
                 <button class="ttpd-btn" type="button" data-depth="20">20</button>
@@ -81,6 +89,23 @@ const TEMPLATE = `
             <div class="ttpd-row">
                 <button id="ttpd-reload" class="ttpd-btn ttpd-btn-primary ttpd-hidden" type="button">重载页面使设置生效</button>
             </div>
+        </section>
+
+        <section class="ttpd-section">
+            <h3>实验 A/B</h3>
+            <p class="ttpd-hint">用来定位卡顿来源：开关时盯着上方「帧率」。取消勾选或刷新页面即恢复，不留设置。</p>
+            <label class="ttpd-check">
+                <input type="checkbox" data-exp="noAnim">
+                <span>禁用动画 / 过渡（主题动效、渐变）</span>
+            </label>
+            <label class="ttpd-check">
+                <input type="checkbox" data-exp="hideChatIframes">
+                <span>隐藏聊天内 iframe（MVU / HTML 状态栏）</span>
+            </label>
+            <label class="ttpd-check">
+                <input type="checkbox" data-exp="hideOtherIframes">
+                <span>隐藏聊天外 iframe（常驻组件 / 主题）</span>
+            </label>
         </section>
 
         <section class="ttpd-section">
@@ -177,6 +202,11 @@ export function mountUI(handlers) {
     host.querySelectorAll('[data-depth]').forEach(button => {
         button.addEventListener('click', () => {
             handlers.onApplyDepth?.(Number(button.dataset.depth));
+        });
+    });
+    host.querySelectorAll('[data-exp]').forEach(input => {
+        input.addEventListener('change', event => {
+            handlers.onToggleExperiment?.(input.dataset.exp, Boolean(event.target.checked));
         });
     });
 
@@ -286,6 +316,19 @@ export function mountUI(handlers) {
             renderScan(scanEl, scan);
         }
 
+        const attrEl = $('#ttpd-attr');
+        const attrText = buildAttrText(state.attr);
+        if (attrEl.textContent !== attrText) {
+            attrEl.textContent = attrText;
+        }
+
+        for (const input of host.querySelectorAll('[data-exp]')) {
+            const on = Boolean(state.experiments?.[input.dataset.exp]);
+            if (input.checked !== on) {
+                input.checked = on;
+            }
+        }
+
         const checkbox = $('#ttpd-perfcss');
         if (checkbox.checked !== Boolean(state.perfCss)) {
             checkbox.checked = Boolean(state.perfCss);
@@ -310,6 +353,42 @@ export function mountUI(handlers) {
             lines.push('⚠️ 疑似泄漏：资源增长与操作量不成比例。');
         } else {
             lines.push('未发现明显泄漏。');
+        }
+        return lines.join('\n');
+    }
+
+    function buildAttrText(attr) {
+        if (!attr) {
+            return '开始录制后统计。';
+        }
+        const lines = [];
+        const top = (title, items) => {
+            if (!items?.length) {
+                return;
+            }
+            lines.push(title);
+            for (const item of items.slice(0, 3)) {
+                lines.push(`  ${item.count}× ${item.source}`);
+            }
+        };
+
+        top('监听器新增', attr.listeners);
+        top('setTimeout 调度', attr.timeouts);
+        top('setInterval 创建', attr.intervalSchedules);
+
+        if (attr.intervalsActive?.length) {
+            const total = attr.intervalsActive.reduce((sum, item) => sum + item.count, 0);
+            lines.push(`常驻 interval（${total}）`);
+            for (const item of attr.intervalsActive.slice(0, 3)) {
+                lines.push(`  ${item.count}× ${item.source} · 最久 ${Math.round(item.oldestMs / 1000)}s`);
+            }
+        }
+
+        if (!lines.length) {
+            lines.push('这段时间没有记录到新的监听器 / 定时器。');
+        }
+        if (attr.stackSamplesDropped) {
+            lines.push(`（调用栈采样限流，丢弃 ${attr.stackSamplesDropped} 次）`);
         }
         return lines.join('\n');
     }

@@ -13,6 +13,8 @@ import {
     getDomSnapshot,
     getChatSnapshot,
     getListenerCounters,
+    getAttribution,
+    resetAttribution,
     createSampler,
     summarizeSamples,
 } from './metrics.js';
@@ -33,9 +35,27 @@ const state = {
     baselineAt: null,
     diff: null,
     scan: null,
+    attr: null,
     perfCss: false,
     pendingReload: false,
     advice: '',
+    experiments: {
+        noAnim: false,
+        hideChatIframes: false,
+        hideOtherIframes: false,
+    },
+};
+
+const EXPERIMENT_CLASSES = {
+    noAnim: 'ttpd-no-anim',
+    hideChatIframes: 'ttpd-hide-chat-iframes',
+    hideOtherIframes: 'ttpd-hide-other-iframes',
+};
+
+const EXPERIMENT_LABELS = {
+    noAnim: '禁用动画/过渡',
+    hideChatIframes: '隐藏聊天内 iframe',
+    hideOtherIframes: '隐藏聊天外 iframe',
 };
 
 let settings = { perfCss: false };
@@ -83,6 +103,7 @@ export async function activate() {
             onTogglePerfCss: applyPerfCss,
             onApplyDepth: applyJsrDepth,
             onDisableStreaming: disableStreaming,
+            onToggleExperiment: setExperiment,
             onCopy: copyReport,
             onClear: clearData,
         });
@@ -141,6 +162,8 @@ function paintState() {
         baselineAt: state.baselineAt,
         diff: state.diff,
         scan: state.scan,
+        attr: state.attr,
+        experiments: state.experiments,
         perfCss: state.perfCss,
         pendingReload: state.pendingReload,
         advice: state.advice,
@@ -162,6 +185,7 @@ function scheduleRender() {
 
 function onSample(sample) {
     state.live = sample;
+    state.attr = getAttribution(6);
     if (state.recording) {
         state.samples.push(sample);
         if (state.samples.length > 300) {
@@ -179,6 +203,7 @@ function refreshConfig() {
 function onOpen() {
     refreshConfig();
     state.live = null;
+    state.attr = getAttribution(6);
     sampler?.start();
     clearInterval(countdownTimer);
     countdownTimer = setInterval(scheduleRender, 500);
@@ -209,6 +234,8 @@ function startRecording() {
     state.samples = [];
     state.summary = null;
     state.recordEndsAt = Date.now() + RECORD_SECONDS * 1000;
+    resetAttribution();
+    state.attr = getAttribution(6);
     sampler?.start();
     clearTimeout(recordTimer);
     recordTimer = setTimeout(stopRecording, RECORD_SECONDS * 1000);
@@ -444,6 +471,18 @@ function disableStreaming() {
     scheduleRender();
 }
 
+function setExperiment(name, enabled) {
+    const className = EXPERIMENT_CLASSES[name];
+    if (!className) {
+        return;
+    }
+    const on = Boolean(enabled);
+    state.experiments[name] = on;
+    document.body.classList.toggle(className, on);
+    ui?.toast(`${on ? '已开启' : '已关闭'}：${EXPERIMENT_LABELS[name]}（刷新即恢复）`);
+    scheduleRender();
+}
+
 /* ------------------------------------------------------------------ */
 /* Advice                                                              */
 /* ------------------------------------------------------------------ */
@@ -454,7 +493,12 @@ function buildAdvice() {
     const managed = config.chatSurface?.managedOwnershipRequired;
 
     if (managed === false) {
-        lines.push('① 未托管：到 TauriTavern 设置 → 性能 → 打开「聊天 DOM 虚拟化」，然后重载。这是收益最大的一步。');
+        const mounted = state.live?.mes;
+        if (Number.isFinite(mounted) && mounted > 0 && mounted <= 20) {
+            lines.push(`① 未托管，但 DOM 只挂了 ${mounted} 楼，虚拟化收益有限；先看「归因」和「实验 A/B」。`);
+        } else {
+            lines.push('① 未托管：到 TauriTavern 设置 → 性能 → 打开「聊天 DOM 虚拟化」，然后重载。这是收益最大的一步。');
+        }
     } else if (managed === true) {
         lines.push('① 虚拟化已托管，继续保持。');
     }
@@ -491,11 +535,13 @@ function buildAdvice() {
 
 function buildReport() {
     return {
-        tool: { name: 'TT-PerfDoctor', version: '0.1.0' },
+        tool: { name: 'TT-PerfDoctor', version: '0.2.0' },
         generatedAt: new Date().toISOString(),
         config: state.config ?? getHostConfig(),
         dom: getDomSnapshot(),
         listeners: getListenerCounters(),
+        attribution: getAttribution(15),
+        experiments: { ...state.experiments },
         live: state.live,
         recording: summarizeSamples(state.samples),
         samples: state.samples.slice(-120),
@@ -530,7 +576,9 @@ function clearData() {
     state.baselineAt = null;
     state.diff = null;
     state.scan = null;
+    state.attr = null;
     state.pendingReload = false;
+    resetAttribution();
     sampler?.clearHistory();
     ui?.showReport('');
     ui?.toast('已清空');

@@ -14,6 +14,193 @@ let listenerRemoves = 0;
 let internalDepth = 0;
 let instrumentationInstalled = false;
 
+/* ------------------------------------------------------------------ */
+/* Source attribution                                                  */
+/*                                                                     */
+/* One stack walk per listener/timer with a per-second budget. Sources */
+/* are cached per callback function so polling loops cost nothing      */
+/* after the first call.                                              */
+/* ------------------------------------------------------------------ */
+
+const ATTRIBUTION_LIMIT = 300;
+const STACK_BUDGET_PER_SEC = 400;
+
+const attribution = {
+    listeners: new Map(),
+    timeouts: new Map(),
+    intervalSchedules: new Map(),
+    intervals: new Map(),
+    stackDropped: 0,
+};
+
+let budgetWindowAt = 0;
+let budgetUsed = 0;
+const sourceCache = new WeakMap();
+
+/** Own extension files, so stack frames from our wrappers are skipped. */
+const SELF_FILES = (() => {
+    try {
+        const directory = new URL('.', import.meta.url).pathname;
+        return new Set(['metrics.js', 'ui.js', 'index.js'].map(name => directory + name));
+    } catch {
+        return null;
+    }
+})();
+
+function normalizeSource(url) {
+    if (!url) {
+        return null;
+    }
+    let parsed;
+    try {
+        parsed = new URL(url, globalThis.location?.href ?? 'https://local/');
+    } catch {
+        return null;
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:' && parsed.protocol !== 'file:') {
+        return null;
+    }
+    if (parsed.pathname.includes('TT-PerfDoctor') || (SELF_FILES && SELF_FILES.has(parsed.pathname))) {
+        return null;
+    }
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    return parts.slice(-2).join('/') || parsed.hostname;
+}
+
+function captureSource() {
+    const now = performance.now();
+    if (now - budgetWindowAt > 1000) {
+        budgetWindowAt = now;
+        budgetUsed = 0;
+    }
+    if (budgetUsed >= STACK_BUDGET_PER_SEC) {
+        attribution.stackDropped += 1;
+        return null;
+    }
+    budgetUsed += 1;
+
+    let stack = '';
+    try {
+        stack = new Error().stack ?? '';
+    } catch {
+        return null;
+    }
+    if (!stack) {
+        return null;
+    }
+
+    for (const line of stack.split('\n')) {
+        const match = line.match(/((?:https?|file):\/\/[^\s)]+?):(\d+):(\d+)/);
+        if (!match) {
+            continue;
+        }
+        const source = normalizeSource(match[1]);
+        if (source) {
+            return `${source}:${match[2]}`;
+        }
+    }
+    return null;
+}
+
+function sourceFor(callback) {
+    const key = callback && (typeof callback === 'function' || typeof callback === 'object')
+        ? callback
+        : null;
+    if (key && sourceCache.has(key)) {
+        return sourceCache.get(key);
+    }
+    const source = captureSource();
+    if (key && source) {
+        sourceCache.set(key, source);
+    }
+    return source;
+}
+
+function bump(map, source) {
+    if (!source) {
+        return;
+    }
+    const key = map.has(source) || map.size < ATTRIBUTION_LIMIT ? source : '(其他)';
+    map.set(key, (map.get(key) ?? 0) + 1);
+}
+
+function installTimerAttribution() {
+    if (globalThis.__TTPD_TIMERS_PATCHED__) {
+        return;
+    }
+    const nativeSetTimeout = globalThis.setTimeout;
+    const nativeSetInterval = globalThis.setInterval;
+    const nativeClearInterval = globalThis.clearInterval;
+    if (typeof nativeSetTimeout !== 'function' || typeof nativeSetInterval !== 'function') {
+        return;
+    }
+
+    globalThis.setTimeout = function patchedSetTimeout(handler, delay, ...args) {
+        if (internalDepth === 0 && typeof handler === 'function') {
+            bump(attribution.timeouts, sourceFor(handler));
+        }
+        return Reflect.apply(nativeSetTimeout, this, [handler, delay, ...args]);
+    };
+
+    globalThis.setInterval = function patchedSetInterval(handler, delay, ...args) {
+        let source = null;
+        if (internalDepth === 0 && typeof handler === 'function') {
+            source = sourceFor(handler);
+            bump(attribution.intervalSchedules, source);
+        }
+        const handle = Reflect.apply(nativeSetInterval, this, [handler, delay, ...args]);
+        if (source) {
+            attribution.intervals.set(handle, { source, since: Date.now() });
+        }
+        return handle;
+    };
+
+    globalThis.clearInterval = function patchedClearInterval(handle) {
+        attribution.intervals.delete(handle);
+        return Reflect.apply(nativeClearInterval, this, [handle]);
+    };
+
+    globalThis.__TTPD_TIMERS_PATCHED__ = true;
+}
+
+function topEntries(map, limit) {
+    return [...map.entries()]
+        .sort((left, right) => right[1] - left[1])
+        .slice(0, limit)
+        .map(([source, count]) => ({ source, count }));
+}
+
+export function getAttribution(limit = 6) {
+    const active = new Map();
+    const now = Date.now();
+    for (const meta of attribution.intervals.values()) {
+        const entry = active.get(meta.source) ?? { count: 0, oldestMs: 0 };
+        entry.count += 1;
+        entry.oldestMs = Math.max(entry.oldestMs, now - meta.since);
+        active.set(meta.source, entry);
+    }
+
+    return {
+        listeners: topEntries(attribution.listeners, limit),
+        timeouts: topEntries(attribution.timeouts, limit),
+        intervalSchedules: topEntries(attribution.intervalSchedules, limit),
+        intervalsActive: [...active.entries()]
+            .sort((left, right) => right[1].count - left[1].count)
+            .slice(0, limit)
+            .map(([source, meta]) => ({ source, count: meta.count, oldestMs: meta.oldestMs })),
+        stackSamplesDropped: attribution.stackDropped,
+    };
+}
+
+export function resetAttribution() {
+    attribution.listeners.clear();
+    attribution.timeouts.clear();
+    attribution.intervalSchedules.clear();
+    attribution.stackDropped = 0;
+    budgetWindowAt = performance.now();
+    budgetUsed = 0;
+}
+
 /** Run a function without counting listeners it registers as extension leakage. */
 export function withInternal(fn) {
     internalDepth += 1;
@@ -30,9 +217,11 @@ export function installInstrumentation() {
     }
     instrumentationInstalled = true;
 
+    installTimerAttribution();
+
     const proto = globalThis.EventTarget?.prototype;
     if (!proto || typeof proto.addEventListener !== 'function') {
-        return { installed: false, reason: 'no-event-target' };
+        return { installed: true, listeners: false, reason: 'no-event-target' };
     }
 
     const add = proto.addEventListener;
@@ -41,6 +230,7 @@ export function installInstrumentation() {
     proto.addEventListener = function patchedAddEventListener() {
         if (internalDepth === 0) {
             listenerAdds += 1;
+            bump(attribution.listeners, sourceFor(arguments[1]));
         }
         return Reflect.apply(add, this, arguments);
     };
@@ -51,7 +241,7 @@ export function installInstrumentation() {
         return Reflect.apply(remove, this, arguments);
     };
 
-    return { installed: true };
+    return { installed: true, listeners: true };
 }
 
 export function getListenerCounters() {
@@ -319,7 +509,9 @@ export function createSampler({ intervalMs = 1000, onSample } = {}) {
                 counters.busyPeak = drift;
             }
         }
-        tickTimer = setTimeout(tick, TICK_MS);
+        withInternal(() => {
+            tickTimer = setTimeout(tick, TICK_MS);
+        });
     }
 
     function onPointerDown() {
@@ -403,8 +595,10 @@ export function createSampler({ intervalMs = 1000, onSample } = {}) {
         resetCounters();
 
         rafId = requestAnimationFrame(onFrame);
-        tickTimer = setTimeout(tick, TICK_MS);
-        emitTimer = setInterval(emit, intervalMs);
+        withInternal(() => {
+            tickTimer = setTimeout(tick, TICK_MS);
+            emitTimer = setInterval(emit, intervalMs);
+        });
 
         withInternal(() => {
             document.addEventListener('pointerdown', onPointerDown, { capture: true, passive: true });

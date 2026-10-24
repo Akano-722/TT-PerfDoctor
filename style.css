@@ -303,6 +303,25 @@
     }
 }
 
+/*
+ * A/B experiment switches. Session only: a reload removes all three classes.
+ * They are diagnostic, not permanent optimizations.
+ */
+body.ttpd-no-anim *,
+body.ttpd-no-anim *::before,
+body.ttpd-no-anim *::after {
+    animation: none !important;
+    transition: none !important;
+}
+
+body.ttpd-hide-chat-iframes #chat iframe {
+    display: none !important;
+}
+
+body.ttpd-hide-other-iframes iframe:not(#chat iframe) {
+    display: none !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
     #ttpd-fab,
     .ttpd-btn {
