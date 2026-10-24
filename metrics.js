@@ -603,6 +603,32 @@ const VISUAL_HINT_SELECTOR = [
     '[class*="wallpaper" i]',
 ].join(',');
 
+/**
+ * Elements worth patching for the style A/B switches. Deliberately narrow:
+ * full-screen theme layers usually carry bg/effect hints, and walking every
+ * node's computed style would itself stutter on a 10 fps device.
+ */
+export function collectPaintTargets() {
+    const targets = new Set();
+    if (document.documentElement) {
+        targets.add(document.documentElement);
+    }
+    if (document.body) {
+        targets.add(document.body);
+    }
+    try {
+        for (const element of document.querySelectorAll(`body > *, #sheld > *, ${VISUAL_HINT_SELECTOR}`)) {
+            targets.add(element);
+        }
+        for (const element of document.querySelectorAll('[style*="background-image"], [style*="filter"], [style*="backdrop"]')) {
+            targets.add(element);
+        }
+    } catch {
+        // Ignore selector support issues.
+    }
+    return [...targets].filter(element => element && element.nodeType === 1 && !element.closest('#ttpd-root'));
+}
+
 function describeElement(element) {
     const tag = element.tagName.toLowerCase();
     const id = element.id ? `#${element.id}` : '';

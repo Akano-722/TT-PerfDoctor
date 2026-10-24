@@ -20,6 +20,7 @@ import {
     measureFps,
     measureIframeFps,
     scanVisualSuspects,
+    collectPaintTargets,
     readTtPerfSnapshot,
 } from './metrics.js';
 import { mountUI } from './ui.js';
@@ -53,11 +54,16 @@ const state = {
         effectsOff: false,
         removeBg: false,
         hideMedia: false,
+        pauseMedia: false,
         hideChatIframes: false,
         hideOtherIframes: false,
         removeIframes: false,
     },
 };
+
+/** Inline !important backups per experiment: overrides theme ID rules. */
+const inlineBackups = new Map();
+const pausedMedia = new Set();
 
 const EXPERIMENT_CLASSES = {
     noAnim: 'ttpd-no-anim',
@@ -75,6 +81,7 @@ const EXPERIMENT_LABELS = {
     effectsOff: '关闭滤镜/模糊/阴影',
     removeBg: '移除整页背景图',
     hideMedia: '隐藏 canvas / video',
+    pauseMedia: '暂停视频/音频播放',
     hideChatIframes: '隐藏聊天内 iframe',
     hideOtherIframes: '隐藏聊天外 iframe',
     removeIframes: '移除全部 iframe',
@@ -519,8 +526,40 @@ function setExperiment(name, enabled) {
         document.body.classList.toggle(className, on);
     }
 
-    if (name === 'pauseAnimations') {
+    if (name === 'removeBg' || name === 'effectsOff') {
+        if (on) {
+            applyInlineExperiment(name, collectPaintTargets(), PAINT_DECLARATIONS[name]);
+        } else {
+            restoreInlineExperiment(name);
+        }
+    } else if (name === 'hideMedia') {
+        if (on) {
+            applyInlineExperiment('hideMedia', [...document.querySelectorAll('canvas, video')], [['display', 'none']]);
+        } else {
+            restoreInlineExperiment('hideMedia');
+        }
+    } else if (name === 'hideChatIframes') {
+        if (on) {
+            applyInlineExperiment('hideChatIframes', [...document.querySelectorAll('#chat iframe')], [['display', 'none']]);
+        } else {
+            restoreInlineExperiment('hideChatIframes');
+        }
+    } else if (name === 'hideOtherIframes') {
+        if (on) {
+            const frames = [...document.querySelectorAll('iframe')].filter(frame => !frame.closest('#chat'));
+            applyInlineExperiment('hideOtherIframes', frames, [['display', 'none']]);
+        } else {
+            restoreInlineExperiment('hideOtherIframes');
+        }
+    } else if (name === 'pauseAnimations') {
         setWebAnimationsPaused(on);
+        if (on) {
+            applyInlineExperiment('pauseAnimations', collectAnimationTargets(), [['animation-play-state', 'paused']]);
+        } else {
+            restoreInlineExperiment('pauseAnimations');
+        }
+    } else if (name === 'pauseMedia') {
+        setMediaPaused(on);
     } else if (name === 'removeIframes' && on) {
         const frames = document.querySelectorAll('iframe');
         const count = frames.length;
@@ -528,10 +567,126 @@ function setExperiment(name, enabled) {
         ui?.toast(`已移除 ${count} 个 iframe（刷新页面恢复）`);
     }
 
-    if (name !== 'removeIframes') {
+    if (name === 'pauseMedia') {
+        ui?.toast(on
+            ? `已暂停 ${pausedMedia.size} 个正在播放的媒体`
+            : '已尝试恢复播放');
+    } else if (name !== 'removeIframes') {
         ui?.toast(`${on ? '已开启' : '已关闭'}：${EXPERIMENT_LABELS[name]}（刷新即恢复）`);
     }
     scheduleRender();
+}
+
+const PAINT_DECLARATIONS = {
+    removeBg: [['background-image', 'none']],
+    effectsOff: [
+        ['filter', 'none'],
+        ['-webkit-filter', 'none'],
+        ['backdrop-filter', 'none'],
+        ['-webkit-backdrop-filter', 'none'],
+        ['box-shadow', 'none'],
+        ['text-shadow', 'none'],
+        ['mix-blend-mode', 'normal'],
+        ['will-change', 'auto'],
+    ],
+};
+
+/**
+ * Theme rules such as `#bg1 { background-image: ... !important }` beat a
+ * low-specificity `body.ttpd-* *` rule. Inline important styles win instead.
+ */
+function applyInlineExperiment(name, elements, declarations) {
+    let store = inlineBackups.get(name);
+    if (!store) {
+        store = new Map();
+        inlineBackups.set(name, store);
+    }
+    for (const element of elements) {
+        if (!element || element.nodeType !== 1) {
+            continue;
+        }
+        let backup = store.get(element);
+        if (!backup) {
+            backup = new Map();
+            store.set(element, backup);
+        }
+        for (const [property, value] of declarations) {
+            if (!backup.has(property)) {
+                backup.set(property, {
+                    value: element.style.getPropertyValue(property),
+                    priority: typeof element.style.getPropertyPriority === 'function'
+                        ? element.style.getPropertyPriority(property)
+                        : '',
+                });
+            }
+            try {
+                element.style.setProperty(property, value, 'important');
+            } catch {
+                element.style.setProperty(property, value);
+            }
+        }
+    }
+}
+
+function restoreInlineExperiment(name) {
+    const store = inlineBackups.get(name);
+    if (!store) {
+        return;
+    }
+    for (const [element, backup] of store) {
+        for (const [property, previous] of backup) {
+            try {
+                if (previous.value) {
+                    element.style.setProperty(property, previous.value, previous.priority);
+                } else {
+                    element.style.removeProperty(property);
+                }
+            } catch {
+                // Element may have been removed by the page.
+            }
+        }
+    }
+    inlineBackups.delete(name);
+}
+
+function collectAnimationTargets() {
+    const targets = new Set();
+    try {
+        for (const animation of document.getAnimations?.() ?? []) {
+            const target = animation.effect?.target;
+            if (target) {
+                targets.add(target);
+            }
+        }
+    } catch {
+        // Optional API.
+    }
+    return [...targets];
+}
+
+function setMediaPaused(paused) {
+    if (!paused) {
+        for (const media of pausedMedia) {
+            try {
+                media.play?.()?.catch?.(() => {});
+            } catch {
+                // Autoplay may be blocked.
+            }
+        }
+        pausedMedia.clear();
+        return;
+    }
+    for (const media of document.querySelectorAll('video, audio')) {
+        if (media.paused || media.ended) {
+            continue;
+        }
+        pausedMedia.add(media);
+        try {
+            media.pause();
+        } catch {
+            // Ignore.
+        }
+    }
 }
 
 function setWebAnimationsPaused(paused) {
@@ -734,7 +889,7 @@ function buildAdvice() {
 
 function buildReport() {
     return {
-        tool: { name: 'TT-PerfDoctor', version: '0.3.0' },
+        tool: { name: 'TT-PerfDoctor', version: '0.3.1' },
         generatedAt: new Date().toISOString(),
         config: state.config ?? getHostConfig(),
         dom: getDomSnapshot(),

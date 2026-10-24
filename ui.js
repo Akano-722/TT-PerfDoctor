@@ -125,7 +125,11 @@ const TEMPLATE = `
             </label>
             <label class="ttpd-check">
                 <input type="checkbox" data-exp="hideMedia">
-                <span>隐藏 canvas / video</span>
+                <span>隐藏 canvas / video（只是不显示，不停止播放）</span>
+            </label>
+            <label class="ttpd-check">
+                <input type="checkbox" data-exp="pauseMedia">
+                <span>暂停所有视频 / 音频（含画中画背景视频，真正停解码）</span>
             </label>
             <label class="ttpd-check">
                 <input type="checkbox" data-exp="hideChatIframes">
@@ -139,7 +143,7 @@ const TEMPLATE = `
                 <input type="checkbox" data-exp="removeIframes">
                 <span>彻底移除全部 iframe（停掉其脚本；刷新才能恢复）</span>
             </label>
-            <p class="ttpd-hint">「隐藏」只是不绘制，iframe 里的 JS 仍在跑；只有「彻底移除」能停掉它们的 CPU 占用。</p>
+            <p class="ttpd-hint">「隐藏」只是不绘制：iframe 里的 JS 仍在跑，视频/画中画也仍在解码。要停 CSS 开销，样式开关已改用内联 !important，能覆盖主题的 #id 规则。</p>
         </section>
 
         <section class="ttpd-section">

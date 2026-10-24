@@ -1,6 +1,6 @@
 {
   "display_name": "Perf Doctor（性能诊断）",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "author": "local",
   "description": "iOS 优先的 TauriTavern 性能诊断与安全优化面板：帧率、主线程、点击延迟、归因、空白遮罩/iframe 隔离探针、A/B 特效实验与 TT HUD 快照。",
   "js": "index.js",
